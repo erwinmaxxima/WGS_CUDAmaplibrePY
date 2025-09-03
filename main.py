@@ -7,7 +7,7 @@ from simulation_loop import simulate_one_step, get_positions, apply_pending_comm
 import time
 
 pending_commands = []
-time_scale = 1.0  # Faktor kecepatan simulasi
+time_scale = 30.0  # Faktor kecepatan simulasi (dinaikkan dari 1.0)
 
 from radar_config import RADARS
 
