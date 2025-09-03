@@ -8,7 +8,6 @@ from radar_config import RADARS, RADAR_COUNT, RADAR_RANGE_KM
 
 # Konstanta
 NUM_PLANES = 1000
-DT = 1.0  # deltaT dalam detik
 
 ids = np.arange(NUM_PLANES, dtype=np.int32)  # ID tetap untuk tiap pesawat
 pos = np.random.uniform(low=[94.5, -9.4, 10000], high=[140.0, 6.0, 10000], size=(NUM_PLANES, 3)).astype(np.float32)
@@ -78,6 +77,9 @@ blocks_per_grid = (NUM_PLANES + (threads_per_block - 1)) // threads_per_block
 
 
 if __name__ == "__main__":
+    # Note: This part is for standalone testing and still uses a fixed DT.
+    # The actual simulation called from main.py will use the dynamic dt.
+    DT = 1.0
     update_motion_kernel[blocks_per_grid, threads_per_block](
         d_pos, d_vel, d_heading, d_cmd_speed, d_cmd_turn, d_cmd_alt,
         d_max_accel, d_max_turn_rate, d_max_climb_rate, DT, NUM_PLANES, d_cmd_target_heading
@@ -98,10 +100,10 @@ if __name__ == "__main__":
     print("Sample detect flags (3):", flags[:3])
     print("Total detected:", int(flags.sum()))
 
-def simulate_one_step():
+def simulate_one_step(dt):
     update_motion_kernel[blocks_per_grid, threads_per_block](
         d_pos, d_vel, d_heading, d_cmd_speed, d_cmd_turn, d_cmd_alt,
-        d_max_accel, d_max_turn_rate, d_max_climb_rate, DT, NUM_PLANES, d_cmd_target_heading
+        d_max_accel, d_max_turn_rate, d_max_climb_rate, dt, NUM_PLANES, d_cmd_target_heading
     )
 
     # run radar detection kernel on GPU
@@ -109,7 +111,7 @@ def simulate_one_step():
         d_pos, d_radar_lon, d_radar_lat, d_detect_flags, np.float32(RADAR_RANGE_KM),
         NUM_PLANES, RADAR_COUNT
     )
-    
+
 def get_positions():
     pos_host = d_pos.copy_to_host()
     heading_host = d_heading.copy_to_host()
