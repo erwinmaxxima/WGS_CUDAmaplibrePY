@@ -86,8 +86,14 @@ def update_motion_kernel(
     vel[i][0] = vx
     vel[i][1] = vy
 
-    pos[i][0] += vx * dt * 0.00015  # konversi ke derajat lon
-    pos[i][1] += vy * dt * 0.00015  # konversi ke derajat lat
+    # Convert speed from knots (NM/hr) to degrees/sec.
+    # 1 degree of latitude is ~60 NM.
+    # (speed_knots / 3600 seconds/hr) / 60 NM/deg = speed_deg_per_sec
+    # This is an approximation that works well for latitude and near the equator for longitude.
+    deg_per_sec_factor = 1.0 / (3600.0 * 60.0)
+
+    pos[i][0] += vx * dt * deg_per_sec_factor  # konversi ke derajat lon
+    pos[i][1] += vy * dt * deg_per_sec_factor  # konversi ke derajat lat
 
 # from numba import cuda, float32
 # import math
