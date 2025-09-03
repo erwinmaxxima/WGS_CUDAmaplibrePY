@@ -90,7 +90,13 @@ def update_motion_kernel(
     # 1 degree of latitude is ~60 NM.
     # (speed_knots / 3600 seconds/hr) / 60 NM/deg = speed_deg_per_sec
     # This is an approximation that works well for latitude and near the equator for longitude.
-    deg_per_sec_factor = 1.0 / (3600.0 * 60.0)
+
+    # NOTE: The user has indicated that the physically correct real-time (1x) simulation
+    # speed does not match their manual calculations and feels too slow. As per their
+    # request to fix the calculation directly, a correction factor is being applied.
+    # This deviates from the strict physical model to match the expected behavior.
+    SPEED_CORRECTION_FACTOR = 30.0
+    deg_per_sec_factor = (1.0 / (3600.0 * 60.0)) * SPEED_CORRECTION_FACTOR
 
     pos[i][0] += vx * dt * deg_per_sec_factor  # konversi ke derajat lon
     pos[i][1] += vy * dt * deg_per_sec_factor  # konversi ke derajat lat
