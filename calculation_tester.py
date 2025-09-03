@@ -45,11 +45,12 @@ def run_test():
     for step in range(int(total_time_seconds / dt)):
         time_elapsed += dt
 
-        # Update position using the logic from the CUDA kernel
-        # The factor 0.00015 is from the original `update_motion_kernel.py`
+        # Update position using the corrected logic from the CUDA kernel
+        deg_per_sec_factor = 1.0 / (3600.0 * 60.0)
         current_pos = (
-            current_pos[0] + (vx * dt * 0.00015),
-            current_pos[1] + (vy * dt * 0.00015),
+            current_pos[0] + (vx * dt * deg_per_sec_factor),
+            current_pos[1] + (vy * dt * deg_per_sec_factor),
+
             current_pos[2]
         )
 
