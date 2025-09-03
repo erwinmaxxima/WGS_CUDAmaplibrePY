@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Flight Tracker with Radars</title>
+
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/deck.gl@9.0.32/dist.min.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        #tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 6px;
+            border-radius: 4px;
+            pointer-events: none;
+            font-size: 13px;
+            display: none;
+            z-index: 9999;
+        }
+        /* kontrol radar toggle */
+        #controls {
+            position: absolute;
+            right: 12px;
+            top: 12px;
+            background: rgba(255,255,255,0.9);
+            border-radius: 6px;
+            padding: 8px;
+            z-index: 9998;
+            font-family: sans-serif;
+            font-size: 14px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="controls">
+        <label><input type="checkbox" id="radarToggle" checked> Tampilkan Radar (250 km)</label>
+		<label><input type="checkbox" id="sweepToggle" checked> Animasi Sweep Radar</label>
+	    <label><input type="checkbox" id="multiSelectToggle"> Multi Select</label>
+
+    </div>
+	<div id="selectionBox" style="position:absolute; border:1px dashed red; display:none; z-index:999;"></div>
+	<div id="group-command-form" style="display:none; position:absolute; background:white; border:1px solid #aaa; padding:10px; z-index:9999;">
+		<strong>Group Command</strong><br>
+		<span id="group-selected-count"></span> selected<br><br>
+		<label>Aksi:
+			<select id="group-command-type">
+				<option value="speedto">Speed To (knots)</option>
+				<option value="headingto">Heading To (°)</option>
+				<option value="heightto">Altitude To (feet)</option>
+			</select>
+		</label><br><br>
+		<label>Nilai: <input type="number" id="group-value" /></label><br><br>
+		<button onclick="sendGroupCommand()">OK</button>
+		<button onclick="hideGroupCommandForm()">Batal</button>
+	</div>
+
+    <div id="tooltip"></div>
+	<div id="command-form" style="display:none; position:absolute; background:white; border:1px solid #aaa; padding:10px; z-index:9999;">
+		<strong>Perintah Kendali</strong><br>
+		<label>ID: <span id="form-plane-id"></span></label><br><br>
+		<label>Aksi:
+			<select id="form-command-type">
+				<option value="speedto">Speed To (knots)</option>
+				<option value="headingto">Heading To (°)</option>
+				<option value="heightto">Altitude To (feet)</option>
+			</select>
+		</label><br><br>
+		<label>Nilai: <input type="number" id="form-value" /></label><br><br>
+		<button onclick="sendCommand()">OK</button>
+		<button onclick="hideCommandForm()">Batal</button>
+	</div>
+
+    <script>
+    // --------------------------
+    // Inisialisasi MapLibre + Deck.GL
+    // --------------------------
+	// Buat peta MapLibre
+	const map = new maplibregl.Map({
+	  container: 'map',
+	  style: 'https://demotiles.maplibre.org/style.json', // ganti sesuai style Bapak
+	  center: [112.8, -7.1], // posisi awal
+	  zoom: 8,
+	  pitch: 0
+	});
+
+	// Buat overlay Deck.GL untuk MapLibre
+	const overlay = new deck.MapboxOverlay({
+	  interleaved: true, // render lebih efisien
+	  layers: []         // akan diisi lewat refreshLayers()
+	});
+
+	// Tambahkan overlay ke peta MapLibre
+	map.addControl(overlay);
+
+    // untuk tooltip
+    const tooltipEl = document.getElementById('tooltip');
+
+	let selectedPlaneId = null;
+	let selectedPlaneIds = []; // array of multiple selected plane IDs
+	let isMultiSelecting = false;
+	let dragStart = null;
+	let dragEnd = null;
+	let isDragging = false;
+	let mouseDown = false;
+
+
+    // --------------------------
+    // WebSocket untuk plane updates (tetap seperti sebelumnya)
+    // --------------------------
+    const ws = new WebSocket('ws://localhost:8000/ws'); // ubah jika backend di tempat berbeda
+
+    ws.onopen = () => console.log('WebSocket connected');
+    ws.onerror = (e) => console.error('WebSocket error', e);
+    ws.onclose = () => console.log('WebSocket closed');
+
+    ws.onmessage = (evt) => {
+        try {
+            const data = JSON.parse(evt.data);
+            updatePlanes(data.planes || []);
+        } catch (err) {
+            console.error('Invalid WS payload', err);
+        }
+    };
+
+    // --------------------------
+    // Helper: buat polygon lingkaran (approks) sebagai array koordinat [lon, lat]
+    // Menggunakan rumus geodesic (destination point) untuk akurasi
+    // --------------------------
+    function toRadians(deg) { return deg * Math.PI / 180; }
+    function toDegrees(rad) { return rad * 180 / Math.PI; }
+
+	let selectedPlane = null;
+
+	function showCommandForm(object, x, y) {
+		selectedPlane = object;
+		selectedPlaneId = object.id;
+		refreshLayers(); // render ulang agar warna update
+		
+		document.getElementById('form-plane-id').innerText = object.id;
+		const form = document.getElementById('command-form');
+		form.style.left = x + 'px';
+		form.style.top = y + 'px';
+		form.style.display = 'block';
+	}
+	
+	function hideCommandForm() {
+		document.getElementById('command-form').style.display = 'none';
+		selectedPlane = null;
+		selectedPlaneId = null;
+		refreshLayers();  // render ulang agar warna kembali normal
+	}
+
+
+	function sendCommand() {
+		const commandType = document.getElementById('form-command-type').value;
+		const value = parseFloat(document.getElementById('form-value').value);
+		if (!selectedPlane || isNaN(value)) {
+			alert("Periksa input.");
+			return;
+		}
+
+		const msg = {
+			command: commandType,
+			id: selectedPlane.id,
+			value: value
+		};
+
+		ws.send(JSON.stringify(msg));
+		hideCommandForm();
+	}
+
+
+
+
+
+    // returns [lon, lat] destination point
+    function destinationPoint(lat, lon, bearingDeg, distanceKm) {
+        const R = 6371.0; // Earth radius km
+        const bearing = toRadians(bearingDeg);
+        const dDivR = distanceKm / R;
+
+        const lat1 = toRadians(lat);
+        const lon1 = toRadians(lon);
+
+        const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dDivR) +
+                               Math.cos(lat1) * Math.sin(dDivR) * Math.cos(bearing));
+
+        const lon2 = lon1 + Math.atan2(
+            Math.sin(bearing) * Math.sin(dDivR) * Math.cos(lat1),
+            Math.cos(dDivR) - Math.sin(lat1) * Math.sin(lat2)
+        );
+
+        return [toDegrees(lon2), toDegrees(lat2)];
+    }
+
+    function createCirclePolygon(lon, lat, radiusKm, nPoints = 64) {
+        const coords = [];
+        for (let i = 0; i <= nPoints; i++) {
+            const bearing = (i / nPoints) * 360.0;
+            const p = destinationPoint(lat, lon, bearing, radiusKm);
+            coords.push(p);
+        }
+        // GeoJSON polygon expects [ [ [lon,lat], ... ] ]
+        return coords;
+    }
+	// create a wedge (sector) polygon for a sweep with center lon/lat, radiusKm, startAngleDeg, endAngleDeg
+	function createSweepPolygon(lon, lat, radiusKm, startAngleDeg, endAngleDeg, nPoints = 32) {
+		const coords = [];
+		const total = nPoints;
+		const angleSpan = ((endAngleDeg - startAngleDeg) + 360) % 360;
+		// ensure monotonic increasing angle steps
+		for (let i = 0; i <= total; i++) {
+			const frac = i / total;
+			const bearing = (startAngleDeg + frac * angleSpan) % 360;
+			const p = destinationPoint(lat, lon, bearing, radiusKm);
+			coords.push(p);
+		}
+		// close polygon back to center to make wedge
+		coords.push([lon, lat]);
+		// polygon as array of [lon,lat] (GeoJSON polygon expects array-of-rings)
+		return coords;
+	}
+	
+	function createWedge(lon, lat, radiusKm, startAngleDeg, endAngleDeg, nPoints = 8) {
+		const coords = [];
+		const angleSpan = ((endAngleDeg - startAngleDeg) + 360) % 360;
+		// outer arc
+		for (let i = 0; i <= nPoints; i++) {
+			const frac = i / nPoints;
+			const bearing = (startAngleDeg + frac * angleSpan) % 360;
+			coords.push(destinationPoint(lat, lon, bearing, radiusKm));
+		}
+		// close back to center
+		coords.push([lon, lat]);
+		return coords;
+	}
+	
+	function createWedgeRing(lon, lat, innerKm, outerKm, startAngleDeg, endAngleDeg, nPoints = 16) {
+		const outerCoords = [];
+		const innerCoords = [];
+		const angleSpan = ((endAngleDeg - startAngleDeg) + 360) % 360;
+
+		for (let i = 0; i <= nPoints; i++) {
+			const frac = i / nPoints;
+			const bearing = (startAngleDeg + frac * angleSpan) % 360;
+			outerCoords.push(destinationPoint(lat, lon, bearing, outerKm));
+		}
+		for (let i = nPoints; i >= 0; i--) {
+			const frac = i / nPoints;
+			const bearing = (startAngleDeg + frac * angleSpan) % 360;
+			innerCoords.push(destinationPoint(lat, lon, bearing, innerKm));
+		}
+
+		return outerCoords.concat(innerCoords);
+	}
+
+	function showGroupCommandForm(x, y) {
+		const form = document.getElementById('group-command-form');
+		document.getElementById('group-selected-count').innerText = selectedPlaneIds.length + " planes";
+		form.style.left = x + 'px';
+		form.style.top = y + 'px';
+		form.style.display = 'block';
+		console.log("Selected IDs:", selectedPlaneIds);
+		console.log("Form status:", document.getElementById('group-command-form').style.display);
+
+	}
+
+	function hideGroupCommandForm() {
+		document.getElementById('group-command-form').style.display = 'none';
+		selectedPlaneIds = [];
+		refreshLayers();
+	}
+
+	function sendGroupCommand() {
+		const type = document.getElementById('group-command-type').value;
+		const value = parseFloat(document.getElementById('group-value').value);
+		if (isNaN(value) || selectedPlaneIds.length === 0) {
+			alert("Invalid input");
+			return;
+		}
+
+		for (const id of selectedPlaneIds) {
+			const msg = {
+				command: type,
+				id: id,
+				value: value
+			};
+			ws.send(JSON.stringify(msg));
+		}
+
+		hideGroupCommandForm();
+	}
+		
+	const mapContainer = document.getElementById('map');
+
+mapContainer.addEventListener('mousedown', (e) => {
+    if (!document.getElementById('multiSelectToggle').checked || isMultiSelecting) return;
+    mouseDown = true;
+
+    // Matikan drag peta MapLibre
+    map.dragPan.disable();
+    map.touchZoomRotate.disable(); 
+
+    // Matikan kontrol drag di Deck.GL
+    <!-- deckInstance.setProps({ -->
+        <!-- controller: {dragPan: false, dragRotate: false, doubleClickZoom: false} -->
+    <!-- }); -->
+
+    isMultiSelecting = true;
+    isDragging = true;
+    dragStart = { x: e.clientX, y: e.clientY };
+
+    const box = document.getElementById('selectionBox');
+    box.style.left = `${e.clientX}px`;
+    box.style.top = `${e.clientY}px`;
+    box.style.width = '0px';
+    box.style.height = '0px';
+    box.style.display = 'block';
+});
+
+
+	document.addEventListener('mousemove', (e) => {
+		if (!isMultiSelecting || !mouseDown) return;
+		console.log('mousemove triggered', e.clientX, e.clientY);
+		dragEnd = { x: e.clientX, y: e.clientY };
+		const box = document.getElementById('selectionBox');
+		const x1 = Math.min(dragStart.x, dragEnd.x);
+		const y1 = Math.min(dragStart.y, dragEnd.y);
+		const x2 = Math.max(dragStart.x, dragEnd.x);
+		const y2 = Math.max(dragStart.y, dragEnd.y);
+
+		box.style.left = `${x1}px`;
+		box.style.top = `${y1}px`;
+		box.style.width = `${x2 - x1}px`;
+		box.style.height = `${y2 - y1}px`;
+	});
+
+document.addEventListener('mouseup', (e) => {
+    mouseDown = false;
+    if (!isMultiSelecting) return;
+
+    const box = document.getElementById('selectionBox');
+    const rect = box.getBoundingClientRect();
+    const containerRect = mapContainer.getBoundingClientRect();
+    const relX = rect.left - containerRect.left;
+    const relY = rect.top - containerRect.top;
+
+	const picked = overlay.pickObjects({
+	  x: relX,
+	  y: relY,
+	  width: rect.width,
+	  height: rect.height,
+	  layerIds: ['planes-layer']
+	});
+
+
+    selectedPlaneIds = picked.map(p => p.object.id);
+
+    if (selectedPlaneIds.length > 0) {
+        showGroupCommandForm(e.clientX, e.clientY);
+    }
+
+    isMultiSelecting = false;
+    isDragging = false;
+
+    // Hidupkan kembali drag peta MapLibre
+    map.dragPan.enable();
+    map.touchZoomRotate.enable();
+
+    // Hidupkan kembali kontrol drag di Deck.GL
+    <!-- deckInstance.setProps({ -->
+        <!-- controller: {dragPan: true, dragRotate: true, doubleClickZoom: true} -->
+    <!-- }); -->
+
+    box.style.display = 'none';
+});
+
+
+
+
+    // --------------------------
+    // Radar layer state + fetching
+    // --------------------------
+    let radarPolygons = []; // array of { polygonCoords: [...], lon, lat, range_km }
+	// Sweep animation state
+	let enableSweep = document.getElementById('sweepToggle').checked;
+	let sweepAngleDeg = 0.0;                // sudut saat ini (derajat)
+	const sweepSpeedDegPerSec = 10.0;       // kecepatan putar (derajat per detik), ubah sesuai selera
+	const sweepWidthDeg = 16.0;              // lebar sektor sweep (derajat)
+
+	// update when toggle changed
+	document.getElementById('sweepToggle').addEventListener('change', (e) => {
+		enableSweep = e.target.checked;
+		// kalau nonaktif, sembunyikan sweep layer (refreshLayers akan handle)
+		if (!enableSweep) {
+			// pastikan tooltip dan layer refresh
+			refreshLayers();
+		}
+	});
+
+    let showRadars = document.getElementById('radarToggle').checked;
+
+    document.getElementById('radarToggle').addEventListener('change', (e) => {
+        showRadars = e.target.checked;
+        refreshLayers(); // re-render layers
+    });
+
+    async function fetchRadars() {
+        try {
+            //const resp = await fetch('/radars'); // pastikan backend expose /radars
+			const resp = await fetch('http://localhost:8000/radars');
+			
+            if (!resp.ok) throw new Error('fetch radars failed: ' + resp.status);
+            const body = await resp.json();
+            const radars = body.radars || [];
+            radarPolygons = radars.map(r => {
+                return {
+                    lon: r.lon,
+                    lat: r.lat,
+                    range_km: r.range_km || 250.0,
+                    polygonCoords: createCirclePolygon(r.lon, r.lat, r.range_km || 250.0, 64)
+                };
+            });
+            console.log('Loaded radars:', radarPolygons.length);
+            refreshLayers();
+        } catch (err) {
+            console.error('Error fetching radars:', err);
+        }
+    }
+
+    // --------------------------
+    // Planes: IconLayer like sebelumnya (pakai deck.IconLayer)
+    // Pastikan iconAtlas/iconMapping media tersedia
+    // --------------------------
+    let currentPlanes = [];
+
+    // gunakan iconAtlas default (bisa diganti)
+    const ICON_ATLAS = 'https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/icon-atlas.png';
+    const ICON_MAPPING = {
+        plane: { x: 0, y: 0, width: 128, height: 128, anchorY: 64 },
+		    plane_red: { x: 128, y: 0, width: 128, height: 128, anchorY: 64 }
+
+    };
+
+    function updatePlanes(planes) {
+        // planes: array of objects { id, lon, lat, alt, heading, ... }
+        currentPlanes = planes;
+        refreshLayers();
+    }
+
+    // --------------------------
+    // Render layers: combine plane IconLayer + radar PolygonLayer + radar center markers
+    // --------------------------
+    function refreshLayers() {
+        const layers = [];
+
+        // Radar polygons (if enabled)
+        if (showRadars && radarPolygons.length > 0) {
+            // polygon features expected as array of arrays of [lon,lat]
+            const polygonsData = radarPolygons.map(r => ({
+                polygon: r.polygonCoords,
+                center: [r.lon, r.lat],
+                range_km: r.range_km
+            }));
+
+            const radarFill = new deck.PolygonLayer({
+                id: 'radar-polygons',
+                data: polygonsData,
+                pickable: true,
+                stroked: true,
+                filled: true,
+                getPolygon: d => d.polygon,
+                getFillColor: d => [200, 50, 50, 30], // rgba (low opacity)
+                getLineColor: d => [200, 50, 50, 120],
+                lineWidthMinPixels: 1,
+                onHover: ({object, x, y}) => {
+                    if (object) {
+                        tooltipEl.style.left = x + 'px';
+                        tooltipEl.style.top = y + 'px';
+                        tooltipEl.innerHTML = `Radar<br>Lon: ${object.center[0].toFixed(3)}<br>Lat: ${object.center[1].toFixed(3)}<br>Range: ${object.range_km} km`;
+                        tooltipEl.style.display = 'block';
+                    } else {
+                        tooltipEl.style.display = 'none';
+                    }
+                }
+            });
+// Radar polygons (if enabled)
+if (showRadars && radarPolygons.length > 0) {
+    const polygonsData = radarPolygons.map(r => ({
+        polygon: r.polygonCoords,
+        center: [r.lon, r.lat],
+        range_km: r.range_km
+    }));
+
+    const radarFill = new deck.PolygonLayer({
+        id: 'radar-polygons',
+        data: polygonsData,
+        pickable: true,
+        stroked: true,
+        filled: true,
+        getPolygon: d => d.polygon,
+        getFillColor: d => [200, 50, 50, 30],
+        getLineColor: d => [200, 50, 50, 120],
+        lineWidthMinPixels: 1,
+        onHover: ({object, x, y}) => {
+            if (object) {
+                tooltipEl.style.left = x + 'px';
+                tooltipEl.style.top = y + 'px';
+                tooltipEl.innerHTML = `Radar<br>Lon: ${object.center[0].toFixed(3)}<br>Lat: ${object.center[1].toFixed(3)}<br>Range: ${object.range_km} km`;
+                tooltipEl.style.display = 'block';
+            } else {
+                tooltipEl.style.display = 'none';
+            }
+        }
+    });
+
+    const radarCenters = new deck.ScatterplotLayer({
+        id: 'radar-centers',
+        data: polygonsData,
+        pickable: false,
+        getPosition: d => d.center,
+        getRadius: d => 2000,
+        radiusUnits: 'meters',
+        radiusMinPixels: 4,
+        getFillColor: d => [200, 50, 50, 200]
+    });
+
+    layers.push(radarFill);
+
+    // Sweep layer (tampil di atas fill) — build data only if sweep aktif
+	if (enableSweep) {
+		const sectorCount = 12; // jumlah sektor di sweep (lebih banyak = halus)
+		const sweepData = radarPolygons.flatMap(r => {
+			const sectors = [];
+			const stepDeg = sweepWidthDeg / sectorCount;
+			for (let i = 0; i < sectorCount; i++) {
+				const sectorStart = (sweepAngleDeg - sweepWidthDeg/2 + i * stepDeg + 360) % 360;
+				const sectorEnd   = (sectorStart + stepDeg) % 360;
+				// opacity menurun dari depan ke belakang
+				const opacity = 0 + (i * (255 / sectorCount));
+				sectors.push({
+					polygon: createWedge(r.lon, r.lat, r.range_km, sectorStart, sectorEnd, 4),
+					fillColor: [255, 255, 250, opacity]
+				});
+			}
+			return sectors;
+		});
+
+		const radarSweepLayer = new deck.PolygonLayer({
+			id: 'radar-sweeps',
+			data: sweepData,
+			stroked: false,
+			filled: true,
+			getPolygon: d => d.polygon,
+			getFillColor: d => d.fillColor,
+			pickable: false,
+			updateTriggers: {
+				sweepAngleDeg
+			}
+		});
+
+		layers.push(radarSweepLayer);
+	}
+
+
+
+    layers.push(radarCenters);
+}
+
+            const radarCenters = new deck.ScatterplotLayer({
+                id: 'radar-centers',
+                data: polygonsData,
+                pickable: false,
+                getPosition: d => d.center,
+                getRadius: d => 2000, // radius in meters for the center dot (small)
+                radiusUnits: 'meters',
+                radiusMinPixels: 4,
+                getFillColor: d => [200, 50, 50, 200]
+            });
+
+            layers.push(radarFill, radarCenters);
+        }
+
+        // Plane IconLayer (same gaya seperti sebelumnya)
+        if (currentPlanes && currentPlanes.length > 0) {
+		const iconLayer = new deck.IconLayer({
+			id: 'planes-layer',
+			data: currentPlanes,
+			iconAtlas: ICON_ATLAS,
+			iconMapping: ICON_MAPPING,
+			getIcon: d => 'plane',
+			getPosition: d => [d.lon, d.lat, d.alt || 0],
+			getSize: d => 40,
+			sizeScale: 1,
+			sizeMinPixels: 20,
+			sizeMaxPixels: 60,
+
+			pickable: true,
+			onHover: ({ object, x, y }) => {
+				if (object) {
+					tooltipEl.style.left = x + 'px';
+					tooltipEl.style.top = y + 'px';
+					tooltipEl.innerHTML = `ID: ${object.id || 'N/A'}<br>Lat: ${object.lat}<br>Lon: ${object.lon}<br>heading: ${object.heading || 0}`;
+					tooltipEl.style.display = 'block';
+				} else {
+					tooltipEl.style.display = 'none';
+				}
+			},
+			onClick: ({ object, x, y }) => {
+				if (object) {
+					showCommandForm(object, x, y);
+				}
+			}
+		});
+
+            layers.push(iconLayer);
+			if (selectedPlaneId !== null) {
+				const selectedData = currentPlanes.filter(p => p.id === selectedPlaneId);
+				if (selectedData.length > 0) {
+					const highlightLayer = new deck.ScatterplotLayer({
+						id: 'highlight-layer',
+						data: selectedData,
+						getPosition: d => [d.lon, d.lat, d.alt || 0],
+						getRadius: 3000,
+						radiusUnits: 'meters',
+						getFillColor: [255, 0, 0, 120],  // merah transparan
+						getLineColor: [255, 0, 0, 200],
+						lineWidthMinPixels: 2,
+						stroked: true,
+						filled: true,
+						pickable: false
+					});
+					layers.push(highlightLayer);
+				}
+			}
+			
+			if (selectedPlaneIds.length > 0) {
+				const selectedData = currentPlanes.filter(p => selectedPlaneIds.includes(p.id));
+				const highlightLayer = new deck.ScatterplotLayer({
+					id: 'group-highlight-layer',
+					data: selectedData,
+					getPosition: d => [d.lon, d.lat, d.alt || 0],
+					getRadius: 3000,
+					radiusUnits: 'meters',
+					getFillColor: [255, 0, 0, 120],
+					getLineColor: [255, 0, 0, 200],
+					lineWidthMinPixels: 2,
+					stroked: true,
+					filled: true,
+					pickable: false
+				});
+				layers.push(highlightLayer);
+			}
+						
+
+        } else {
+            // Jika tidak ada pesawat, sembunyikan tooltip
+            tooltipEl.style.display = 'none';
+        }
+
+        // Set layers ke deckInstance
+        //deckInstance.setProps({ layers });
+		overlay.setProps({ layers });
+
+    }
+
+    // --------------------------
+    // Inisialisasi: fetch radars saat load, lalu render awal
+    // --------------------------
+    fetchRadars();
+
+    // optional: refresh radar definitions berkala (jika radar bisa berubah)
+    // setInterval(fetchRadars, 60_000); // setiap 60s
+
+    // Jika ingin tes lokal tanpa server, Anda bisa panggil updatePlanes(...) manual dengan sample data.
+
+    // Pastikan initial render agar layer kosong tidak crash
+    refreshLayers();
+	
+	// --- baru kita tambahkan di sini ---
+	let lastTimestamp = null;
+	function animateSweep(timestamp) {
+		if (!lastTimestamp) lastTimestamp = timestamp;
+		const dt = (timestamp - lastTimestamp) / 1000.0; // detik
+		lastTimestamp = timestamp;
+		if (enableSweep) {
+			sweepAngleDeg = (sweepAngleDeg + sweepSpeedDegPerSec * dt) % 360.0;
+			refreshLayers();
+		}
+		requestAnimationFrame(animateSweep);
+	}
+	requestAnimationFrame(animateSweep);
+
+    </script>
+</body>
+</html>
