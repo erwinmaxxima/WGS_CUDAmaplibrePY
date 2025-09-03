@@ -7,6 +7,7 @@ from simulation_loop import simulate_one_step, get_positions, apply_pending_comm
 import time
 
 pending_commands = []
+time_scale = 1.0  # Faktor kecepatan simulasi
 
 from radar_config import RADARS
 
@@ -60,7 +61,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Periksa jika ada pesan masuk
                 msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
                 data = json.loads(msg)
-                if "command" in data and "id" in data and "value" in data:
+                # Perintah global untuk mengubah kecepatan simulasi
+                if data.get("command") == "timescale":
+                    global time_scale
+                    time_scale = float(data.get("value", 1.0))
+                # Perintah untuk pesawat tertentu
+                elif "command" in data and "id" in data and "value" in data:
                     pending_commands.append(data)
             except asyncio.TimeoutError:
                 pass  # Tidak ada pesan baru, lanjut simulasi
@@ -71,7 +77,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 sync_cmd_buffers_to_device()
                 pending_commands.clear()
 
-            simulate_one_step(dt)
+            simulate_one_step(dt * time_scale)
             plane_list = get_positions()
             await websocket.send_text(json.dumps({"planes": plane_list}))
 
