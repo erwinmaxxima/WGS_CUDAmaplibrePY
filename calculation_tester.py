@@ -50,6 +50,7 @@ def run_test():
         current_pos = (
             current_pos[0] + (vx * dt * deg_per_sec_factor),
             current_pos[1] + (vy * dt * deg_per_sec_factor),
+
             current_pos[2]
         )
 
