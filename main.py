@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from simulation_loop import simulate_one_step, get_positions, apply_pending_commands,sync_cmd_buffers_to_device
+import time
 
 pending_commands = []
 
@@ -42,14 +43,19 @@ async def get_radars():
     Frontend gunakan ini untuk menampilkan marker + circle.
     """
     return {"radars": RADARS}
-    
+
 # WebSocket endpoint tetap di /ws
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("connection open")
+    last_time = time.time()
     try:
         while True:
+            current_time = time.time()
+            dt = current_time - last_time
+            last_time = current_time
+
             try:
                 # Periksa jika ada pesan masuk
                 msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
@@ -64,12 +70,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 apply_pending_commands(pending_commands)
                 sync_cmd_buffers_to_device()
                 pending_commands.clear()
-            #apply_pending_commands(pending_commands)
-            #print(pending_commands)
-            #pending_commands.clear()
-            #sync_cmd_buffers_to_device()  # ⬅️ panggil ini
-            
-            simulate_one_step()
+
+            simulate_one_step(dt)
             plane_list = get_positions()
             await websocket.send_text(json.dumps({"planes": plane_list}))
 
