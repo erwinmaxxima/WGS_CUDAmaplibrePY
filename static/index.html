@@ -470,12 +470,12 @@ document.addEventListener('mouseup', (e) => {
     // Definisikan path dan mapping untuk ikon baru
     const AIRCRAFT_MODE_ATLAS = 'static/aircraftmode.png';
     const AIRCRAFT_MODE_MAPPING = {
-        plane: { x: 0, y: 0, width: 512, height: 512, mask: true }
+        plane: { x: 0, y: 0, width: 128, height: 128 }
     };
 
     const SPEEDVECTOR_MODE_ATLAS = 'static/speedvectormode.png';
     const SPEEDVECTOR_MODE_MAPPING = {
-        plane: { x: 0, y: 0, width: 512, height: 512, mask: true }
+        plane: { x: 0, y: 0, width: 128, height: 128 }
     };
 
     // Handler event untuk interaksi plane (menghindari duplikasi)
@@ -483,7 +483,7 @@ document.addEventListener('mouseup', (e) => {
         if (object) {
             tooltipEl.style.left = x + 'px';
             tooltipEl.style.top = y + 'px';
-            tooltipEl.innerHTML = `ID: ${object.id || 'N/A'}<br>Lat: ${object.lat}<br>Lon: ${object.lon}<br>heading: ${object.heading || 0}`;
+            tooltipEl.innerHTML = `ID: ${object.id || 'N/A'}<br>Lat: ${object.lat}<br>Lon: ${object.lon}<br>heading: ${object.heading || 0}<br>speed: ${object.speed || 0}`;
             tooltipEl.style.display = 'block';
         } else {
             tooltipEl.style.display = 'none';
@@ -654,16 +654,17 @@ if (showRadars && radarPolygons.length > 0) {
                     onClick: planeOnClick,
                 });
 
-                const speedVectors = new deck.LineLayer({
-                    id: 'speed-vectors',
+                const headingIndicator = new deck.LineLayer({
+                    id: 'speed-vectors', // Keep ID for consistency
                     data: currentPlanes,
                     getSourcePosition: d => [d.lon, d.lat, d.alt || 0],
-                    getTargetPosition: d => destinationPoint(d.lat, d.lon, d.heading, (d.speed || 0) * 0.05), // panjang vektor
+                    // Konversi heading dari radian ke derajat, dan gunakan panjang tetap (misal 4km)
+                    getTargetPosition: d => destinationPoint(d.lat, d.lon, (d.heading || 0) * 180 / Math.PI, 4),
                     getColor: [255, 255, 0, 255],
                     getWidth: 3,
                     widthUnits: 'pixels',
                 });
-                layers.push(planeIcon, speedVectors);
+                layers.push(planeIcon, headingIndicator);
             } else {
                 // Mode 1: Simbol pesawat berputar
                 const iconLayer = new deck.IconLayer({
@@ -674,7 +675,8 @@ if (showRadars && radarPolygons.length > 0) {
                     getIcon: d => 'plane',
                     getPosition: d => [d.lon, d.lat, d.alt || 0],
                     getSize: 30,
-                    getAngle: d => -(d.heading || 0), // Rotasi berdasarkan heading (berlawanan arah jarum jam)
+                    // Konversi heading dari radian ke derajat untuk rotasi
+                    getAngle: d => -((d.heading || 0) * 180 / Math.PI),
                     sizeScale: 1,
                     pickable: true,
                     onHover: planeOnHover,
