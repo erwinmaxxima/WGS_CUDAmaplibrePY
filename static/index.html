@@ -478,6 +478,48 @@ document.addEventListener('mouseup', (e) => {
         plane: { x: 0, y: 0, width: 128, height: 128 }
     };
 
+    // --- Logika Ikon Komposit untuk Vektor ---
+    let COMPOSITE_VECTOR_ATLAS = null;
+    const COMPOSITE_VECTOR_MAPPING = {
+        plane_vector: { x: 0, y: 0, width: 128, height: 128 }
+    };
+
+    // Fungsi untuk membuat ikon komposit (simbol + garis) di atas canvas
+    // Menggunakan Promise agar bisa di-await
+    function createCompositeVectorIcon() {
+        return new Promise((resolve, reject) => {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            img.crossOrigin = "Anonymous"; // Diperlukan jika gambar dari domain berbeda
+            img.src = SPEEDVECTOR_MODE_ATLAS;
+
+            img.onload = () => {
+                // Ukuran canvas sesuai gambar
+                canvas.width = img.width;
+                canvas.height = img.height;
+
+                // Gambar ikon dasar
+                ctx.drawImage(img, 0, 0);
+
+                // Gambar garis indikator heading (lurus ke atas dari tengah)
+                ctx.beginPath();
+                ctx.moveTo(canvas.width / 2, canvas.height / 2);
+                ctx.lineTo(canvas.width / 2, 10); // Garis dari tengah ke atas
+                ctx.strokeStyle = 'yellow';
+                ctx.lineWidth = 5;
+                ctx.stroke();
+
+                resolve(canvas); // Resolve promise dengan canvas yang sudah jadi
+            };
+
+            img.onerror = (err) => {
+                console.error("Gagal memuat gambar ikon untuk komposit:", err);
+                reject(err);
+            };
+        });
+    }
+
     // Handler event untuk interaksi plane (menghindari duplikasi)
     function planeOnHover({ object, x, y }) {
         if (object) {
@@ -639,32 +681,24 @@ if (showRadars && radarPolygons.length > 0) {
         // Plane IconLayer (same gaya seperti sebelumnya)
         if (currentPlanes && currentPlanes.length > 0) {
             if (symbolModeVector) {
-                // Mode 2: Simbol statis + Vektor kecepatan
-                const planeIcon = new deck.IconLayer({
-                    id: 'plane-squares', // Jaga ID agar highlighting tetap berfungsi
-                    data: currentPlanes,
-                    iconAtlas: SPEEDVECTOR_MODE_ATLAS,
-                    iconMapping: SPEEDVECTOR_MODE_MAPPING,
-                    getIcon: d => 'plane',
-                    getPosition: d => [d.lon, d.lat, d.alt || 0],
-                    getSize: 30,
-                    sizeScale: 1,
-                    pickable: true,
-                    onHover: planeOnHover,
-                    onClick: planeOnClick,
-                });
-
-                const headingIndicator = new deck.LineLayer({
-                    id: 'speed-vectors', // Keep ID for consistency
-                    data: currentPlanes,
-                    getSourcePosition: d => [d.lon, d.lat, d.alt || 0],
-                    // Konversi heading dari radian ke derajat, dan gunakan panjang tetap (misal 4km)
-                    getTargetPosition: d => destinationPoint(d.lat, d.lon, (d.heading || 0) * 180 / Math.PI, 4),
-                    getColor: [255, 255, 0, 255],
-                    getWidth: 3,
-                    widthUnits: 'pixels',
-                });
-                layers.push(planeIcon, headingIndicator);
+                // Mode 2: Ikon komposit (simbol + vektor) yang berputar
+                if (COMPOSITE_VECTOR_ATLAS) { // Hanya render jika ikon sudah dibuat
+                    const compositeIconLayer = new deck.IconLayer({
+                        id: 'plane-squares', // Jaga ID untuk highlighting
+                        data: currentPlanes,
+                        iconAtlas: COMPOSITE_VECTOR_ATLAS,
+                        iconMapping: COMPOSITE_VECTOR_MAPPING,
+                        getIcon: d => 'plane_vector',
+                        getPosition: d => [d.lon, d.lat, d.alt || 0],
+                        getSize: 30,
+                        sizeScale: 1,
+                        getAngle: d => ((d.heading || 0) * 180 / Math.PI) - 90, // Gunakan rotasi yang sudah benar
+                        pickable: true,
+                        onHover: planeOnHover,
+                        onClick: planeOnClick,
+                    });
+                    layers.push(compositeIconLayer);
+                }
             } else {
                 // Mode 1: Simbol pesawat berputar
                 const iconLayer = new deck.IconLayer({
@@ -676,7 +710,7 @@ if (showRadars && radarPolygons.length > 0) {
                     getPosition: d => [d.lon, d.lat, d.alt || 0],
                     getSize: 30,
                     // Konversi heading dari radian ke derajat untuk rotasi
-                    getAngle: d => -((d.heading || 0) * 180 / Math.PI),
+                    getAngle: d => ((d.heading || 0) * 180 / Math.PI) - 90,
                     sizeScale: 1,
                     pickable: true,
                     onHover: planeOnHover,
@@ -737,6 +771,14 @@ if (showRadars && radarPolygons.length > 0) {
     // --------------------------
     // Inisialisasi: fetch radars saat load, lalu render awal
     // --------------------------
+    // Buat ikon komposit saat aplikasi dimuat
+    createCompositeVectorIcon().then(canvas => {
+        COMPOSITE_VECTOR_ATLAS = canvas;
+        refreshLayers(); // Render ulang setelah ikon siap
+    }).catch(err => {
+        console.error("Tidak dapat membuat ikon vektor komposit.", err);
+    });
+
     fetchRadars();
 
     // optional: refresh radar definitions berkala (jika radar bisa berubah)
