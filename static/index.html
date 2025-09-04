@@ -44,6 +44,7 @@
         <label><input type="checkbox" id="radarToggle" checked> Tampilkan Radar (250 km)</label>
 		<label><input type="checkbox" id="sweepToggle" checked> Animasi Sweep Radar</label>
 	    <label><input type="checkbox" id="multiSelectToggle"> Multi Select</label>
+        <label><input type="checkbox" id="symbolModeToggle"> Ubah Simbol (Vector)</label>
 
         <div id="timescale-controls" style="margin-top: 8px;">
             <label>Sim Speed:</label>
@@ -374,11 +375,12 @@ document.addEventListener('mouseup', (e) => {
 	  y: relY,
 	  width: rect.width,
 	  height: rect.height,
-	  layerIds: ['planes-layer']
+	  layerIds: symbolModeVector ? ['plane-squares'] : ['planes-layer']
 	});
 
 
     selectedPlaneIds = picked.map(p => p.object.id);
+    refreshLayers(); // panggil refresh untuk update highlight
 
     if (selectedPlaneIds.length > 0) {
         showGroupCommandForm(e.clientX, e.clientY);
@@ -457,14 +459,43 @@ document.addEventListener('mouseup', (e) => {
     // Pastikan iconAtlas/iconMapping media tersedia
     // --------------------------
     let currentPlanes = [];
+    let symbolModeVector = false; // state untuk mode simbol
 
-    // gunakan iconAtlas default (bisa diganti)
-    const ICON_ATLAS = 'https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/icon-atlas.png';
-    const ICON_MAPPING = {
-        plane: { x: 0, y: 0, width: 128, height: 128, anchorY: 64 },
-		    plane_red: { x: 128, y: 0, width: 128, height: 128, anchorY: 64 }
+    // event listener untuk toggle simbol
+    document.getElementById('symbolModeToggle').addEventListener('change', (e) => {
+        symbolModeVector = e.target.checked;
+        refreshLayers(); // render ulang untuk ganti simbol
+    });
 
+    // Definisikan path dan mapping untuk ikon baru
+    const AIRCRAFT_MODE_ATLAS = 'static/aircraftmode.png';
+    const AIRCRAFT_MODE_MAPPING = {
+        plane: { x: 0, y: 0, width: 512, height: 512, mask: true }
     };
+
+    const SPEEDVECTOR_MODE_ATLAS = 'static/speedvectormode.png';
+    const SPEEDVECTOR_MODE_MAPPING = {
+        plane: { x: 0, y: 0, width: 512, height: 512, mask: true }
+    };
+
+    // Handler event untuk interaksi plane (menghindari duplikasi)
+    function planeOnHover({ object, x, y }) {
+        if (object) {
+            tooltipEl.style.left = x + 'px';
+            tooltipEl.style.top = y + 'px';
+            tooltipEl.innerHTML = `ID: ${object.id || 'N/A'}<br>Lat: ${object.lat}<br>Lon: ${object.lon}<br>heading: ${object.heading || 0}`;
+            tooltipEl.style.display = 'block';
+        } else {
+            tooltipEl.style.display = 'none';
+        }
+    }
+
+    function planeOnClick({ object, x, y }) {
+        if (object) {
+            showCommandForm(object, x, y);
+        }
+    }
+
 
     function updatePlanes(planes) {
         // planes: array of objects { id, lon, lat, alt, heading, ... }
@@ -607,37 +638,50 @@ if (showRadars && radarPolygons.length > 0) {
 
         // Plane IconLayer (same gaya seperti sebelumnya)
         if (currentPlanes && currentPlanes.length > 0) {
-		const iconLayer = new deck.IconLayer({
-			id: 'planes-layer',
-			data: currentPlanes,
-			iconAtlas: ICON_ATLAS,
-			iconMapping: ICON_MAPPING,
-			getIcon: d => 'plane',
-			getPosition: d => [d.lon, d.lat, d.alt || 0],
-			getSize: d => 40,
-			sizeScale: 1,
-			sizeMinPixels: 20,
-			sizeMaxPixels: 60,
+            if (symbolModeVector) {
+                // Mode 2: Simbol statis + Vektor kecepatan
+                const planeIcon = new deck.IconLayer({
+                    id: 'plane-squares', // Jaga ID agar highlighting tetap berfungsi
+                    data: currentPlanes,
+                    iconAtlas: SPEEDVECTOR_MODE_ATLAS,
+                    iconMapping: SPEEDVECTOR_MODE_MAPPING,
+                    getIcon: d => 'plane',
+                    getPosition: d => [d.lon, d.lat, d.alt || 0],
+                    getSize: 30,
+                    sizeScale: 1,
+                    pickable: true,
+                    onHover: planeOnHover,
+                    onClick: planeOnClick,
+                });
 
-			pickable: true,
-			onHover: ({ object, x, y }) => {
-				if (object) {
-					tooltipEl.style.left = x + 'px';
-					tooltipEl.style.top = y + 'px';
-					tooltipEl.innerHTML = `ID: ${object.id || 'N/A'}<br>Lat: ${object.lat}<br>Lon: ${object.lon}<br>heading: ${object.heading || 0}`;
-					tooltipEl.style.display = 'block';
-				} else {
-					tooltipEl.style.display = 'none';
-				}
-			},
-			onClick: ({ object, x, y }) => {
-				if (object) {
-					showCommandForm(object, x, y);
-				}
-			}
-		});
-
-            layers.push(iconLayer);
+                const speedVectors = new deck.LineLayer({
+                    id: 'speed-vectors',
+                    data: currentPlanes,
+                    getSourcePosition: d => [d.lon, d.lat, d.alt || 0],
+                    getTargetPosition: d => destinationPoint(d.lat, d.lon, d.heading, (d.speed || 0) * 0.05), // panjang vektor
+                    getColor: [255, 255, 0, 255],
+                    getWidth: 3,
+                    widthUnits: 'pixels',
+                });
+                layers.push(planeIcon, speedVectors);
+            } else {
+                // Mode 1: Simbol pesawat berputar
+                const iconLayer = new deck.IconLayer({
+                    id: 'planes-layer',
+                    data: currentPlanes,
+                    iconAtlas: AIRCRAFT_MODE_ATLAS,
+                    iconMapping: AIRCRAFT_MODE_MAPPING,
+                    getIcon: d => 'plane',
+                    getPosition: d => [d.lon, d.lat, d.alt || 0],
+                    getSize: 30,
+                    getAngle: d => -(d.heading || 0), // Rotasi berdasarkan heading (berlawanan arah jarum jam)
+                    sizeScale: 1,
+                    pickable: true,
+                    onHover: planeOnHover,
+                    onClick: planeOnClick,
+                });
+                layers.push(iconLayer);
+            }
 			if (selectedPlaneId !== null) {
 				const selectedData = currentPlanes.filter(p => p.id === selectedPlaneId);
 				if (selectedData.length > 0) {
